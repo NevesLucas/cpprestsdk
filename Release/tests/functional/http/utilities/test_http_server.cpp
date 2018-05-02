@@ -548,20 +548,26 @@ public:
             for (auto it = result.headers().begin(); it != result.headers().end(); ++it)
                 tr->m_headers[it->first] = it->second;
 
-            tr->m_body = result.extract_vector().get();
+            result.extract_vector().then([this,tr,result](const std::vector<unsigned char>& v) {
+                tr->m_body = v;
+                {
+                    pplx::extensibility::scoped_critical_section_t lock(m_lock);
+                    m_responding_requests[tr->m_request_id] = result;
+                }
 
-            {
-                std::lock_guard<std::mutex> lock(m_response_lock);
-                m_responding_requests[tr->m_request_id] = result;
-            }
+                while (!m_cancel)
+                {
+                    pplx::extensibility::scoped_critical_section_t lock(m_lock);
+                    if (m_requests.size() > 0)
+                    {
+                        m_requests[0].set(tr);
+                        m_requests.erase(m_requests.begin());
+                        return;
+                    }
+                }
+            });
+        });
 
-            m_queue.on_request(std::move(tr));
-        };
-        m_listener.support(handler);
-        m_listener.support(web::http::methods::OPTIONS, handler);
-        m_listener.support(web::http::methods::TRCE, handler);
-
-        m_listener.open().wait();
     }
 
     ~_test_http_server()
